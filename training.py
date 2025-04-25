@@ -52,7 +52,7 @@ def training(model, loss_fnc, enc_opt, dec_opt, num_epochs=10):
         model.decoder.train()
         
         batch, _ = make_batch(hp.batch_size, device='cuda')
-        y, mu, sig_hat = model(batch)
+        y, mu, sig_hat, _ = model(batch)
 
         loss = loss_fnc(y, batch, mu, sig_hat, hp.R, hp.eta_min, hp.wKL, epoch, hp.KL_min)
 
@@ -73,5 +73,27 @@ def training(model, loss_fnc, enc_opt, dec_opt, num_epochs=10):
         #     enc_opt = lr_decay(enc_opt)
         #     dec_opt = lr_decay(dec_opt)
 
-training(model, loss_fnc, enc_opt, dec_opt, num_epochs=50000)
+# training(model, loss_fnc, enc_opt, dec_opt, num_epochs=5000)
+
+# #save the model
+# torch.save(model.state_dict(), 'sketch_rnn_model.pth')
+
+old_model = sketch_rnn(input_size=5, enc_hsize=hp.enc_hidden_size, dec_hsize=hp.dec_hidden_size, z_size=hp.Nz, dec_out_size=6 * 20 + 3,
+                   rec_dropout=hp.dropout)#, layer_norm=True)
+old_model.load_state_dict(torch.load('sketch_rnn_model.pth'))
+
+old_model.to(device)
+old_model.eval()
+batch, _ = make_batch(1, device='cuda')
+
+old_model(batch, hp.Nmax, hp.temperature, hp.M)
+
+
+
+
+
+
+
+
+
 
