@@ -44,9 +44,27 @@ data = dataset['train']
 data = purify(data)
 data = normalize(data)
 
-def make_batch(batch_size, device = 'cpu'):
+data_test = dataset['test']
+data_test = purify(data_test)
+data_test = normalize(data_test)
+
+hp.Nmax = max_size(data)
+
+def make_batch(batch_size, device = 'cpu', data_c = None, test=False):
     batch_idx = np.random.choice(len(data),batch_size)
-    batch_sequences = [data[idx] for idx in batch_idx]
+    if data_c is None:
+        if not test:
+            batch_sequences = [data[idx] for idx in batch_idx]
+        else:
+            batch_idx = np.random.choice(len(data_test),batch_size)
+            batch_sequences = [data_test[idx] for idx in batch_idx] 
+    else:
+        print(data_c)
+        data_c = purify(data_c)
+        print(data_c)
+        data_c = normalize(data_c)
+        hp.Nmax = max_size(data_c)
+        batch_sequences = data_c
     strokes = []
     lengths = []
     indice = 0
@@ -61,6 +79,8 @@ def make_batch(batch_size, device = 'cpu'):
         lengths.append(len(seq[:,0]))
         strokes.append(new_seq)
         indice += 1
+
+    #limit to 1 strok
 
     if device == 'cuda':
         batch = torch.from_numpy(np.stack(strokes,1)).cuda().float()

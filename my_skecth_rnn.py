@@ -4,6 +4,7 @@ from matplotlib import pyplot as plt
 import numpy as np
 import torch 
 import torch.nn as nn
+
 class encoder(nn.Module):
 
     def __init__(self, input_size, h_size, z_size, rec_dropout=0., layer_norm=False):
@@ -19,18 +20,25 @@ class encoder(nn.Module):
         self.fc_mu = nn.Linear(2*h_size, z_size)
         self.fc_sigma_hat = nn.Linear(2*h_size, z_size)
 
-    def forward(self, x):
-        _, (hidden_states, _) = self.bi_lstm(x)
+    def forward(self, x, hidden_cell=None):
+        if hidden_cell is None:
+            h0 = torch.zeros(2, x.size(1), self.h_size).to(x.device)
+            c0 = torch.zeros(2, x.size(1), self.h_size).to(x.device)
+            hidden_cell = (h0, c0)
+
+        _, (hidden_states, _) = self.bi_lstm(x.float(), hidden_cell)
         h_forward, h_backward = hidden_states
+        #print(h_forward.shape, h_backward.shape)
         h_concat = torch.cat([h_forward, h_backward], dim=1)
+        #print(h_concat.shape)
 
         mu = self.fc_mu(h_concat)
         sig_hat = self.fc_sigma_hat(h_concat)
 
         sigma = torch.exp(sig_hat / 2.0)
-
-        epsilon = torch.randn_like(mu)
-        z = mu + sigma * epsilon
+        z_size = mu.size()
+        N = torch.normal(torch.zeros(z_size),torch.ones(z_size)).cuda()
+        z = mu + sigma * N
 
         return z, mu, sig_hat
 
@@ -64,10 +72,12 @@ class decoder(nn.Module):
             h0_c0 = (h0.unsqueeze(0).contiguous(), c0.unsqueeze(0).contiguous())
 
             outs, (hidden, _) = self.lstm(x_z, h0_c0)
+            #print(outs.shape)
             y = self.fc_out(outs)
+            print(y.shape)
 
         else:
-            if hidden_cell is not None:
+            if hidden_cell is None:
                 h_c = self.fc(z)
                 h_c = torch.tanh(h_c)
                 h0, c0 = h_c[:, :self.h_size], h_c[:, self.h_size:]            
@@ -75,7 +85,7 @@ class decoder(nn.Module):
 
             if x is not None:
                 z_expanded = z.unsqueeze(0).expand(x.size(0), -1, -1)
-                print(x.shape, z_expanded.shape)
+                #print(x.shape, z_expanded.shape)
                 x_z = torch.cat([x, z_expanded], dim=2) #[seq_len + 1, batch_size, input_size + z_size]
                 outs, (hidden, cell) = self.lstm(x_z, hidden_cell)
             else:
@@ -108,13 +118,13 @@ class sketch_rnn(nn.Module):
         # Extract the last 3 values from the decoder output
         feat_size = decoder_out.size(-1)
         # Apply Softmax to the last 3 features
-        softmax_last3 = torch.nn.functional.softmax(decoder_out[:, :, -3:], dim=-1)
-        softmax_last3 = softmax_last3 * temp
+        softmax_last3 = decoder_out[:, :, -3:] / temp
+        softmax_last3 = torch.nn.functional.softmax(softmax_last3, dim=-1)
 
         # Apply Softmax to every 1st feature in 6-feature groups (ignoring last 3)
         idx_first = torch.arange(0, feat_size, 6)  # Indices of the 1st features
-        softmax_first = torch.nn.functional.softmax(decoder_out[:, :, idx_first], dim=-1)
-        softmax_first = softmax_first * temp
+        softmax_first = decoder_out[:, :, idx_first] / temp
+        softmax_first = torch.nn.functional.softmax(softmax_first, dim=-1)
 
         # Apply Tanh to every 6th feature in 6-feature groups (ignoring last 3)
         idx_sixth = torch.arange(5, feat_size, 6)  # Indices of the 6th features
@@ -280,11 +290,7 @@ class sketch_rnn(nn.Module):
             s=None
             hidden_cell = None
             for i in range(nmax):
-                if i == 0:
-                    y, hidden_cell = self.decoder(None, z, hidden_cell)
-                else:
-                    y, hidden_cell = self.decoder(s, z, hidden_cell)
-                
+                y, hidden_cell = self.decoder(s, z, hidden_cell)       
                 y = self.get_sampling_params(y, tenperature)
                 y = y.squeeze(0)
                 s, dx, dy, p = self.sample_next_stroke(y, M)
@@ -325,122 +331,153 @@ class SKETCH_RNN_LOSS(nn.Module):
         self.Nz = Nz
     
     def bivariate_normal(self, dx, dy, mux, muy, sx, sy, rho):
-        normx = (dx - mux) / sx
-        normy = (dy - muy) / sy
-        z = normx**2 + normy**2 - 2 * rho * normx * normy
-        denom = 2 * math.pi * sx * sy * torch.sqrt(1 - rho**2 + 1e-6)
-        exponent = -z / (2 * (1 - rho**2 + 1e-6))
-        return torch.exp(exponent) / (denom + 1e-6)
+        # Normalized distance
+        dx_norm = (dx - mux) / sx
+        dy_norm = (dy - muy) / sy
+        
+        # Calculate z term correctly according to the paper
+        z = (dx_norm**2 + dy_norm**2 - 2 * rho * dx_norm * dy_norm) / (1 - rho**2 + 1e-8)
+        
+        # Calculate denominator
+        denom = 2 * math.pi * sx * sy * torch.sqrt(1 - rho**2 + 1e-8)
+        
+        # Calculate exponent
+        exponent = -z / 2
+        
+        return torch.exp(exponent) / denom
     
     def process_logits(self, y):
-
-        y_decr = y[:-1, :, :] # Remove the last element of the sequence
-
-        feat_size = y_decr.size(-1)
-        # Apply Softmax to the last 3 features
-        softmax_last3 = torch.nn.functional.softmax(y_decr[:, :, -3:], dim=-1)
-
-        # Apply Softmax to every 1st feature in 6-feature groups (ignoring last 3)
-        idx_first = torch.arange(0, feat_size, 6)  # Indices of the 1st features
-        softmax_first = torch.nn.functional.softmax(y_decr[:, :, idx_first], dim=-1)
-
-        # Apply Tanh to every 6th feature in 6-feature groups (ignoring last 3)
-        idx_sixth = torch.arange(5, feat_size, 6)  # Indices of the 6th features
-        tanh_sixth = torch.tanh(y_decr[:, :, idx_sixth])
-
-        # Create a transformed tensor
-        y_transformed = y_decr.clone()
-        y_transformed[:, :, -3:] = softmax_last3  # Update last 3 features
-        y_transformed[:, :, idx_first] = softmax_first  # Update 1st feature in each group
-        y_transformed[:, :, idx_sixth] = tanh_sixth  # Update 6th feature in each group
+        """Process the raw output logits from the decoder network."""
+        y_decr = y
+        seq_len, batch_size, feat_size = y_decr.shape
         
-        return y_transformed
+        # Reshape to separate the mixture components and pen states
+        mixture_params = y_decr[:, :, :6*self.M].reshape(seq_len, batch_size, self.M, 6)
+        pen_params = y_decr[:, :, 6*self.M:]
+        
+        # Process mixture weights - apply softmax to pi values
+        pi = torch.nn.functional.softmax(mixture_params[:, :, :, 0], dim=2)
+        
+        # Keep mu_x and mu_y as they are
+        mu_x = mixture_params[:, :, :, 1]
+        mu_y = mixture_params[:, :, :, 2]
+        
+        # Apply exp to sigma to ensure positivity
+        sigma_x = torch.exp(mixture_params[:, :, :, 3])
+        sigma_y = torch.exp(mixture_params[:, :, :, 4])
+        
+        # Apply tanh to rho to ensure it's between -1 and 1
+        rho = torch.tanh(mixture_params[:, :, :, 5])
+        
+        # Apply softmax to pen states
+        pen_logits = torch.nn.functional.softmax(pen_params, dim=2)
+        
+        # Reconstruct the output tensor
+        processed_mixture = torch.stack([pi, mu_x, mu_y, sigma_x, sigma_y, rho], dim=3)
+        processed_mixture = processed_mixture.reshape(seq_len, batch_size, 6*self.M)
+        
+        # Concatenate with processed pen states
+        y_processed = torch.cat([processed_mixture, pen_logits], dim=2)
+        
+        return y_processed # Exclude the last time step for consistency with input x
 
-    def LsLoss(self, y, x):
-        # y: [seq, batch, 6*M + 3]
-        # x: [seq, batch, 5]
+    def LsLoss(self, y, x, mask=None):
+        """Calculate the mixture density loss for the stroke parameters, with optional masking."""
         seq_len, batch_size, _ = x.shape
-        dx = x[..., 0] # [seq, batch]
-        dy = x[..., 1] # [seq, batch]
-
-        # Reshape first 6*M part into [seq, batch, M, 6]
+        dx = x[..., 0]
+        dy = x[..., 1]
+        print(seq_len)
         y_mixtures = y[:, :, :6*self.M].reshape(seq_len, batch_size, self.M, 6)
 
-        pi = y_mixtures[..., 0]  # [seq, batch, M]
+        pi = y_mixtures[..., 0]
         mux = y_mixtures[..., 1]
         muy = y_mixtures[..., 2]
-        sx = torch.exp(y_mixtures[..., 3])  # [seq, batch, M]
-        sy = torch.exp(y_mixtures[..., 4])
+        sx = y_mixtures[..., 3]
+        sy = y_mixtures[..., 4]
         rho = y_mixtures[..., 5]
 
-        # Expand dx, dy to match [seq, batch, M]
         dx_exp = dx.unsqueeze(-1).expand(-1, -1, self.M)
         dy_exp = dy.unsqueeze(-1).expand(-1, -1, self.M)
 
-        v = self.bivariate_normal(dx_exp, dy_exp, mux, muy, sx, sy, rho)  # [seq, batch, M]
-        weighted_v = pi * v  # [seq, batch, M]
-
+        v = self.bivariate_normal(dx_exp, dy_exp, mux, muy, sx, sy, rho)
+        weighted_v = pi * v
         sum_over_m = weighted_v.sum(dim=-1)  # [seq, batch]
-        log_sum = torch.log(sum_over_m + 1e-9)  # [seq, batch]
-        sum_over_seq = log_sum.sum(dim=0)  # [batch]
-        total_log = sum_over_seq.sum()  # scalar
 
-        loss = -total_log / float(self.Nmax * batch_size)
+        log_sum = torch.log(sum_over_m + 1e-8)  # [seq, batch]
+
+        if mask is not None:
+            log_sum = log_sum * mask  # apply mask before summing
+
+        seq_sum = log_sum.sum(dim=0)  # [batch]
+        loss = -seq_sum.mean() / float(self.Nmax)
 
         return loss
-    
-    def LpLoss(self, y, x):
-        _, batch_size, _ = x.shape
-        
-        p1 = x[..., 2]  # [seq, batch]
+
+    def LpLoss(self, y, x, mask=None):
+        """Calculate the categorical cross-entropy loss for the pen states, with optional masking."""
+        seq_len, batch_size, _ = x.shape
+
+        p1 = x[..., 2]
         p2 = x[..., 3]
         p3 = x[..., 4]
-        
+
         y_qs = y[:, :, 6*self.M:]
-        q1 = y_qs[..., 0]  # [seq, batch]
+        q1 = y_qs[..., 0]
         q2 = y_qs[..., 1]
         q3 = y_qs[..., 2]
-        
-        # Calculate individual cross-entropy terms
-        pq1 = p1 * torch.log(q1 + 1e-9)
-        pq2 = p2 * torch.log(q2 + 1e-9)
-        pq3 = p3 * torch.log(q3 + 1e-9)
-        
-        # Sum over k dimension (k=1,2,3)
+
+        pq1 = p1 * torch.log(q1 + 1e-8)
+        pq2 = p2 * torch.log(q2 + 1e-8)
+        pq3 = p3 * torch.log(q3 + 1e-8)
+
         sum_k = pq1 + pq2 + pq3  # [seq, batch]
-        
-        # Sum over all timesteps (Nmax in the formula)
-        sum_i = sum_k.sum(dim=0)  # [batch]
+
+        if mask is not None:
+            sum_k = sum_k * mask  # apply mask before summing
+
+        sum_seq = sum_k.sum(dim=0)  # [batch]
+        loss = -sum_seq.mean() / float(self.Nmax)
+
+        return loss
+
+    def lk_loss(self, mu, sig_hat):
+        """Calculate the KL divergence loss."""
+        # Sum over latent dimensions first
+        nz_sum = torch.sum(1 + sig_hat - mu**2 - torch.exp(sig_hat), dim=1)
         
         # Take mean over batch
-        loss = -sum_i.sum() / float(self.Nmax * batch_size)
-    
+        loss = -nz_sum.mean() / (2 * self.Nz)
+        
         return loss
-    
-    def lk_loss(self, mu, sig_hat):
 
-        batch_size = mu.shape[0]
-        nz_sum = torch.sum(1 + sig_hat - mu**2 - torch.exp(sig_hat), dim=1)
-        batch_sum = torch.sum(nz_sum, dim=0)
-        return -batch_sum / float(2 * self.Nz * batch_size)
+    def forward(self, y, x, mu, sig_hat, R, eta_min, wkl, lenghts, step, kl_min=0.01):
+        """Calculate the complete loss with KL annealing."""
+        # Process logits to get proper distributions
+        y_processed = self.process_logits(y)
 
-    def forward(self, y, x, mu, sig_hat, R, eta_min, wkl, step, kl_min=0.01):
+        eos = torch.stack([torch.Tensor([0,0,0,0,1])]*x.size(1)).to(x.device).unsqueeze(0) # [seq_len, batch_size, input_size]
+        x = torch.cat([x, eos], dim=0) #[seq_len + 1, batch_size, input_size]
 
-        # Process logits
-        y = self.process_logits(y) # [seq, batch, 6*M + 3]
-        # Reconstruction losses
-        lr = self.LsLoss(y, x) + self.LpLoss(y, x)
-
-        # KL loss
+        mask = torch.zeros(y.size(0), y.size(1), device=y.device)
+        for indice,length in enumerate(lenghts):
+            mask[:length,indice] = 1
+        #count the 1s in the mask in the first dimension for 1st batch
+        lr = self.LsLoss(y_processed, x, mask=mask) + self.LpLoss(y_processed, x, mask=mask)
+        
+        # Calculate KL divergence loss
         lkl = self.lk_loss(mu, sig_hat)
-
-        # KL annealing factor η_step
-        eta_step = 1.0 - (1.0 - eta_min) * R ** step
-
-        # KL term with annealing and minimum KL threshold
-        annealed_kl = wkl * eta_step * torch.maximum(lkl, torch.tensor(kl_min, device=lkl.device))
-
-        return lr + annealed_kl
+        
+        # Calculate annealing factor
+        eta_step = 1.0 - (1.0 - eta_min) * (R ** step)
+        
+        # Apply KL annealing with minimum threshold
+        kl_loss = torch.max(lkl, torch.tensor(kl_min, device=lkl.device))
+        annealed_kl = wkl * eta_step * kl_loss
+        
+        # Total loss
+        total_loss = lr + annealed_kl
+        
+        return total_loss, lr, lkl
 
 
 
