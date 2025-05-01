@@ -1,3 +1,6 @@
+#ALTHOUGH THE MAIN ARCHITECTURE AND LOSS FUNCTION ARE IMPLEMENTED BY ME,
+#GENERATION FUNCTIONS AND SOME DEBUGGING FIXES WERE TAKEN FROM https://github.com/alexis-jacq/Pytorch-Sketch-RNN/blob/master/sketch_rnn.py
+
 import math
 import PIL
 from matplotlib import pyplot as plt
@@ -150,6 +153,7 @@ class sketch_rnn(nn.Module):
         
         return y_transformed
     
+    #vibe coded
     def sample_bivariate_normal(self, mu_x, mu_y, sigma_x, sigma_y, rho_xy):
         # Check for near-zero sigma values which can cause issues
         sigma_x = torch.max(sigma_x, torch.tensor(1e-6, device=sigma_x.device))
@@ -177,6 +181,7 @@ class sketch_rnn(nn.Module):
             # Fallback if covariance is not valid (shouldn't happen with clamps/epsilons often)
             return mu_x, mu_y
 
+    #vibe coded
     def sample_next_stroke(self, processed_params, M):
 
         if len(processed_params.shape) != 2 or processed_params.shape[1] != 6 * M + 3:
@@ -241,6 +246,7 @@ class sketch_rnn(nn.Module):
 
         return output_strokes, dx_sampled, dy_sampled, p_sampled
     
+    #vibe coded
     def make_image(self, sequence, epoch, name='_output_'):
         """Plot drawing with separated strokes"""
         # Split sequence based on strokes (where the third column > 0)
@@ -267,20 +273,21 @@ class sketch_rnn(nn.Module):
         pil_image = PIL.Image.fromarray(image_array[:, :, :3], 'RGB')
 
         # Save the image with a dynamic name based on epoch
-        name = str(epoch) + name + '.jpg'
+        name = name + '.jpg'
         pil_image.save(name, "JPEG")
 
         # Close the plot to free up resources
         plt.close("all")
 
-    def forward(self, x, nmax=None, tenperature=1.0, M=20):
+    def forward(self, x, nmax=None, tenperature=1.0, M=20, name='_output_', epoch=6969):
         
         if self.training:
             z, mu, sig_hat = self.encoder(x)
             y = self.decoder(x, z)         
             return y, mu, sig_hat, z
         
-        else:   
+        else:
+            #generate sequence   
             self.encoder.train(False)
             self.decoder.train(False)
             z, _, _ = self.encoder(x)
@@ -312,8 +319,9 @@ class sketch_rnn(nn.Module):
             y_sample = np.cumsum(seq_y, 0)
             z_sample = np.array(seq_z)
             sequence = np.stack([x_sample,y_sample,z_sample]).T
-            print(sequence)
-            self.make_image(sequence, 6969, name='_output_')
+            #print(sequence)
+            self.make_image(sequence, epoch, name)
+            return sequence
                 
 
 #y --> [batch_size, 6*M + 3]
@@ -461,7 +469,7 @@ class SKETCH_RNN_LOSS(nn.Module):
         mask = torch.zeros(y.size(0), y.size(1), device=y.device)
         for indice,length in enumerate(lenghts):
             mask[:length,indice] = 1
-        #count the 1s in the mask in the first dimension for 1st batch
+
         lr = self.LsLoss(y_processed, x, mask=mask) + self.LpLoss(y_processed, x, mask=mask)
         
         # Calculate KL divergence loss

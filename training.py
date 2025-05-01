@@ -41,6 +41,7 @@ loss_fnc = SKETCH_RNN_LOSS(Nmax=hp.Nmax, M=hp.M, Nz=hp.Nz)
 enc_opt = torch.optim.Adam(model.encoder.parameters(), lr=hp.lr)
 dec_opt = torch.optim.Adam(model.decoder.parameters(), lr=hp.lr)
 
+#TAKEN FROM https://github.com/alexis-jacq/Pytorch-Sketch-RNN/blob/master/sketch_rnn.py
 def lr_decay(optimizer):
     """Decay learning rate by a factor of lr_decay"""
     for param_group in optimizer.param_groups:
@@ -93,20 +94,22 @@ def training(model, loss_fnc, enc_opt, dec_opt, num_epochs=10):
     plt.title('Losses over epochs')
     plt.legend()
     plt.show()
+    #save the plot
+    plt.savefig('sketch-rrnn/losses_{num_epochs}.png')
     return model
 
 #model = training(model, loss_fnc, enc_opt, dec_opt, num_epochs=10000)
 
-old_model = sketch_rnn(input_size=5, enc_hsize=256, dec_hsize=512, z_size=128, dec_out_size=6 * 20 + 3)
-old_model.load_state_dict(torch.load('sketch-rrnn/sketch_rnn_model_epoch_5000.pth'))
-old_model = old_model.to(device)
-old_model.eval()
-
-batch, _ = make_batch(1, device='cuda', data_c=None, test=True)
-old_model(batch, hp.Nmax, hp.temperature, hp.M)
-
-
-
+# batch, _ = make_batch(1, device='cuda', data_c=None, test=True)
+# for i in range(1000, 9001, 1000):  # Loop from 1000 to 10000 (inclusive), step by 1000
+#     model_path = f'sketch-rrnn/sketch_rnn_model_epoch_{i}.pth'
+#     model = sketch_rnn(input_size=5, enc_hsize=256, dec_hsize=512, z_size=128, dec_out_size=6 * 20 + 3)
+#     model.load_state_dict(torch.load(model_path))
+#     model = model.to('cuda')
+#     model.eval()
+    
+#     output_path = f'sketch-rrnn/temp_images/out_put_{i}'
+#     model(batch, hp.Nmax, hp.temperature, hp.M, output_path, i)
 
 
 

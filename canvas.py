@@ -5,7 +5,7 @@ from data_loader import make_batch
 import hyper_param as hp
 import torch.nn as nn
 
-
+##DOES NOT WORK
 class DrawCapture:
     def __init__(self):
         self.root = tk.Tk()
@@ -51,7 +51,7 @@ class DrawCapture:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         old_model = sketch_rnn(input_size=5, enc_hsize=hp.enc_hidden_size, dec_hsize=hp.dec_hidden_size, z_size=hp.Nz, dec_out_size=6 * 20 + 3,
                    rec_dropout=hp.dropout)#, layer_norm=True)
-        old_model.load_state_dict(torch.load('sketch_rnn_model.pth'))
+        old_model.load_state_dict(torch.load('sketch-rrnn/trained_models/sketch_rnn_model_epoch_9000.pth'))
 
         old_model.to(device)
         old_model.eval()
